@@ -289,15 +289,352 @@ const UI = {
     document.getElementById("adminLink").classList.toggle("hidden", !(u&&u.is_admin));
     document.getElementById("logoutForm").classList.toggle("hidden", !u);
     document.getElementById("authLinks").classList.toggle("hidden", !!u);
-      // podmień przycisk "Filmy" w zależności od logowania
-  const filmLink = document.getElementById("filmLink");
-  if (u) {
-    filmLink.setAttribute("href", "filmy.html");
-    filmLink.removeAttribute("onclick");
-  } else {
-    filmLink.setAttribute("href", "#");
-    filmLink.setAttribute("onclick", "UI.show('home')");
-  }
-
+    // podmień przycisk "Filmy" w zależności od logowania
+    const filmLink = document.getElementById("filmLink");
+    if (u) {
+      filmLink.setAttribute("href", "filmy.html");
+      filmLink.removeAttribute("onclick");
+    } else {
+      filmLink.setAttribute("href", "#");
+      filmLink.setAttribute("onclick", "UI.show('home')");
+    }
   },
   async show(view, params={}){
+    const app = UI.el();
+    const me = await Auth.currentProfile();
+
+    // HOME
+    if(view==="home"){
+      const cats = await getCategories();
+      const movies = await getMovies({ sort:"new" });
+
+      // policz ratingi zbiorczo
+      const ratingsMap = await UI._avgRatingsMap(movies.map(m=>m.id));
+
+      // Historia dla zalogowanych
+      let historyHTML = "";
+      if(me){
+        const hist = await getWatchHistory(me.id, 12);
+        if(hist.length){
+          historyHTML = `
+            <section class="section mt-8">
+              <div class="flex" style="justify-content:space-between;">
+                <h2>Historia oglądania</h2>
+                <a href="#" onclick="UI.show('me')">zobacz wszystko →</a>
+              </div>
+              <div class="grid">
+                ${hist.map(h=> UI.card(h.movies, ratingsMap.get(h.movies?.id), false)).join("")}
+              </div>
+            </section>`;
+        }
+      }
+
+      app.innerHTML = `
+        ${UI.filters(cats)}
+        ${historyHTML}
+        <section class="section mt-8">
+          <div class="flex" style="justify-content:space-between">
+            <h2>Nowo dodane</h2>
+            <a class="small" href="#" onclick="UI.search('', {sort:'new'})">Najświeższe →</a>
+          </div>
+          <div class="grid">
+            ${movies.map(m=> UI.card(m, ratingsMap.get(m.id), !!me)).join("") || '<div class="small">Brak wyników.</div>'}
+          </div>
+        </section>
+      `;
+    }
+
+    // LOGIN
+    else if(view==="login"){
+      app.innerHTML = `
+        <div class="card p" style="max-width:400px;margin:0 auto">
+          <h2>Zaloguj się</h2>
+          <form onsubmit="event.preventDefault(); Auth.login(this.email.value, this.password.value)">
+            <label>E-mail</label><input type="email" name="email" required>
+            <label>Hasło</label><input type="password" name="password" required>
+            <button class="btn mt-4">Zaloguj</button>
+          </form>
+          <div class="mt-4 small">Nie masz konta? <a href="#" onclick="UI.show('register')">Zarejestruj się</a></div>
+        </div>
+      `;
+    }
+
+    // REGISTER
+    else if(view==="register"){
+      app.innerHTML = `
+        <div class="card p" style="max-width:400px;margin:0 auto">
+          <h2>Rejestracja</h2>
+          <form onsubmit="event.preventDefault(); Auth.register(this.username.value, this.email.value, this.password.value)">
+            <label>Nick</label><input name="username" required>
+            <label>E-mail</label><input type="email" name="email" required>
+            <label>Hasło</label><input type="password" name="password" required>
+            <button class="btn mt-4">Zarejestruj</button>
+          </form>
+          <div class="mt-4 small">Masz już konto? <a href="#" onclick="UI.show('login')">Zaloguj się</a></div>
+        </div>
+      `;
+    }
+
+    // TOP
+    else if(view==="top"){
+      const top = await leaderboard(30);
+      app.innerHTML = `
+        <h1>TOP użytkownicy (30 dni)</h1>
+        <div class="card p">
+          ${top.map(t=>`<div class="flex" style="justify-content:space-between;padding:8px 0">
+            <span>#${t.rank} ${escapeHtml(t.user)}</span>
+            <span class="badge">${t.gained} pkt</span>
+          </div>`).join("") || "<div class='small'>Brak danych.</div>"}
+        </div>
+      `;
+    }
+
+    // ME
+    else if(view==="me"){
+      if(!me) return UI.show("login");
+      const hist = await getWatchHistory(me.id, 100);
+      const wishSet = await getWishlist(me.id);
+      const wishIds = [...wishSet];
+      let wishMovies = [];
+      if(wishIds.length){
+        const { data } = await db.from("movies").select("*").in("id", wishIds);
+        wishMovies = data||[];
+      }
+      app.innerHTML = `
+        <h1>Mój profil</h1>
+        <div class="grid" style="grid-template-columns:2fr 1fr;gap:16px">
+          <div class="card p">
+            <h3>Profil</h3>
+            <p><strong>${escapeHtml(me.username||me.email||"Użytkownik")}</strong></p>
+            <p>Punkty: <strong id="pts">${me.points||0}</strong></p>
+            <form class="mt-2" onsubmit="event.preventDefault(); UI.saveBio(this.username.value)">
+              <label>Nick</label>
+              <input name="username" value="${escapeHtml(me.username||'')}">
+              <button class="btn mt-2">Zapisz</button>
+            </form>
+            <div class="mt-4">
+              <button class="btn" onclick="UI.earnAd()">+50 pkt (demo)</button>
+              <form class="flex mt-2" onsubmit="event.preventDefault(); UI.redeem(this.code.value); this.reset();">
+                <input type="text" name="code" placeholder="Kod premium/punkty">
+                <button class="btn secondary">Użyj</button>
+              </form>
+            </div>
+          </div>
+          <div class="card p">
+            <h3>Skróty</h3>
+            <div class="small">Zgłoś błąd? Napisz w komentarzu pod dowolnym filmem 😉</div>
+          </div>
+        </div>
+
+        <div class="mt-4">
+          <h3>Historia oglądania</h3>
+          <div class="grid">${hist.map(h=> UI.card(h.movies, null, true)).join("") || '<div class="small">Brak historii.</div>'}</div>
+        </div>
+        <div class="mt-4">
+          <h3>Lista „Chcę obejrzeć"</h3>
+          <div class="grid">${wishMovies.map(m=> UI.card(m, null, true)).join("") || '<div class="small">Pusto.</div>'}</div>
+        </div>
+      `;
+    }
+
+    // ADMIN
+    else if(view==="admin"){
+      if(!(me && me.is_admin)){ app.innerHTML = "<div class='alert'>Brak dostępu.</div>"; return; }
+      const [cats, movies] = await Promise.all([getCategories(), getMovies()]);
+      app.innerHTML = `
+        <h1>Panel admina</h1>
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
+          <div class="card p">
+            <h3>Dodaj film</h3>
+            <form onsubmit="event.preventDefault(); UI.addMovie(this)">
+              <label>Tytuł</label><input name="title" required>
+              <label>Opis</label><textarea name="description"></textarea>
+              <label>Miniatura (URL)</label><input name="thumb" required>
+              <label>Iframe src (URL hostingu)</label><input name="iframe" required placeholder="https://...">
+              <div class="row">
+                <div>
+                  <label>Kategoria</label>
+                  <select name="category_id">${cats.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("")}</select>
+                </div>
+                <div><label>Rok</label><input type="number" name="year"></div>
+              </div>
+              <div class="row">
+                <div><label>Długość (min)</label><input type="number" name="duration"></div>
+                <div><label>Punkty wymagane</label><input type="number" name="points_required" value="0"></div>
+              </div>
+              <button class="btn mt-2">Dodaj</button>
+            </form>
+          </div>
+
+          <div class="card p">
+            <h3>Kategorie</h3>
+            <form class="flex" onsubmit="event.preventDefault(); UI.addCategory(this.name.value); this.reset();">
+              <input name="name" placeholder="Nazwa kategorii">
+              <button class="btn secondary">Dodaj</button>
+            </form>
+            <div class="mt-2">
+              ${cats.map(c=>`<span class="badge" style="margin-right:6px">${escapeHtml(c.name)} <a href="#" onclick="UI.delCategory(${c.id})" class="small">×</a></span>`).join(" ")}
+            </div>
+          </div>
+
+          <div class="card p" style="grid-column:1/3">
+            <h3>Lista filmów</h3>
+            <table style="width:100%;border-collapse:collapse">
+              <tr><th style="text-align:left">Tytuł</th><th>Punkty</th><th></th></tr>
+              ${movies.map(m=>`
+                <tr>
+                  <td><a href="#" onclick="UI.show('movie',{id:${m.id}})">${escapeHtml(m.title)}</a></td>
+                  <td>${m.points_required||0}</td>
+                  <td><button class="btn secondary" onclick="UI.deleteMovie(${m.id})">Usuń</button></td>
+                </tr>`).join("")}
+            </table>
+          </div>
+        </div>
+      `;
+    }
+  },
+
+  // Updated card function to handle login state
+  card(m, avg, isLoggedIn){
+    if(!m) return "";
+    
+    // Different behavior for logged in vs logged out users
+    const clickHandler = isLoggedIn ? `onclick="UI.show('movie',{id:${m.id}})"` : '';
+    const linkClass = isLoggedIn ? '' : 'style="opacity:0.6;cursor:default"';
+    const loginPrompt = isLoggedIn ? '' : '<div class="small" style="color:#888;text-align:center;padding:8px">Zaloguj się, aby oglądać</div>';
+    
+    return `<div class="card">
+      <a href="#" ${clickHandler} ${linkClass}><img src="${m.thumb}" alt="${escapeHtml(m.title)}"></a>
+      <div class="card p">
+        <div class="flex" style="justify-content:space-between;">
+          <strong><a href="#" ${clickHandler} ${linkClass}>${escapeHtml(m.title)}</a></strong>
+          <span class="badge">★ ${avg?avg.toFixed(1):"-\"}</span>
+        </div>
+        <div class="small mt-2">czas: ${m.duration||"?"} min • rok: ${m.year||"?\"}</div>
+        ${loginPrompt}
+      </div>
+    </div>`;
+  },
+
+  // Added missing functions for complete functionality
+  async _avgRatingsMap(movieIds){
+    const map = new Map();
+    if(!movieIds.length) return map;
+    const { data, error } = await db.from("ratings").select("movie_id, score").in("movie_id", movieIds);
+    if(error) return map;
+    const by = {};
+    (data||[]).forEach(r=>{
+      by[r.movie_id] ||= [];
+      by[r.movie_id].push(r.score);
+    });
+    movieIds.forEach(id=>{
+      const arr = by[id]||[];
+      map.set(id, arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length) : null);
+    });
+    return map;
+  },
+
+  filters(categories){
+    return `
+    <section class="section mt-8">
+      <h2>Filtruj</h2>
+      <form class="form" onsubmit="event.preventDefault(); UI.search(this.q.value, {
+        category_id:this.cat.value||null, year:this.year.value||null,
+        min_duration:this.len.value||null, sort:this.sort.value
+      })">
+        <div class="row">
+          <div><label>Kategoria</label>
+            <select name="cat"><option value="">—</option>${categories.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("")}</select>
+          </div>
+          <div><label>Rok</label><input type="number" name="year"></div>
+        </div>
+        <div class="row">
+          <div><label>Min. długość (min)</label><input type="number" name="len"></div>
+          <div><label>Sortowanie</label>
+            <select name="sort">
+              <option value="new">Najnowsze</option>
+            </select>
+          </div>
+        </div>
+        <label>Szukaj</label><input type="text" name="q" placeholder="Tytuł...">
+        <button class="btn mt-4">Szukaj</button>
+      </form>
+    </section>`;
+  },
+
+  async search(q, extra={}){
+    const me = await Auth.currentProfile();
+    const cats = await getCategories();
+    const movies = await getMovies({ q, ...extra });
+    const ratingsMap = await UI._avgRatingsMap(movies.map(m=>m.id));
+    const app = UI.el();
+    app.innerHTML = UI.filters(cats) + `
+      <h3 class="mt-4">Wyniki</h3>
+      <div class="grid">${movies.map(m=>UI.card(m, ratingsMap.get(m.id), !!me)).join("") || '<div class="small">Brak wyników.</div>'}</div>
+    `;
+  },
+
+  async saveBio(username){
+    const me = await Auth.currentProfile(); if(!me) return;
+    await db.from("profiles").update({ username: String(username||"").slice(0,50) }).eq("id", me.id);
+    toast("Zapisano ✔️"); UI.show('me');
+  },
+
+  async earnAd(){
+    const me = await Auth.currentProfile(); if(!me) return UI.show("login");
+    await addPoints(me.id, 50, "Reklama (demo)");
+    toast("Zdobyto 50 pkt");
+    UI.show('me');
+  },
+
+  async redeem(code){
+    const me = await Auth.currentProfile(); if(!me) return UI.show("login");
+    const res = await redeemCode(me.id, code);
+    toast(res.msg);
+    UI.show('me');
+  },
+
+  async addMovie(form){
+    const payload = {
+      title: form.title.value.trim(),
+      description: form.description.value.trim(),
+      thumb: form.thumb.value.trim(),
+      iframe: form.iframe.value.trim(),
+      category_id: form.category_id.value ? Number(form.category_id.value) : null,
+      year: form.year.value ? Number(form.year.value) : null,
+      duration: form.duration.value ? Number(form.duration.value) : null,
+      points_required: form.points_required.value ? Number(form.points_required.value) : 0,
+      created_at: new Date().toISOString()
+    };
+    const { error } = await addMovie(payload);
+    if(error){ alert("❌ " + error.message); return; }
+    toast("Film dodany ✔️");
+    UI.show('admin');
+  },
+
+  async deleteMovie(id){
+    const { error } = await deleteMovie(id);
+    if(error){ alert("❌ " + error.message); return; }
+    UI.show('admin');
+  },
+
+  async addCategory(name){
+    name = (name||"").trim(); if(!name) return;
+    const { error } = await addCategory(name);
+    if(error) alert("❌ " + error.message);
+    UI.show('admin');
+  },
+
+  async delCategory(id){
+    const { error } = await delCategory(id);
+    if(error) alert("❌ " + error.message);
+    UI.show('admin');
+  }
+};
+
+// Start the app by showing home page
+UI.updateHeader();
+UI.show('home');
+</script>
+</body>
+</html>
