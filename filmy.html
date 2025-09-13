@@ -209,52 +209,6 @@ async function getWatchHistory(userId, limit=100){
   if(error) throw error; return data||[];
 }
 
-async function buyMovie(movieId, pointsRequired, megaUrl) {
-  const userId = getCurrentUserId(); // Zakładam, że masz funkcję zwracającą aktualne ID użytkownika
-
-  // Pobierz dane użytkownika
-  const { data: user, error: userError } = await supabase
-    .from('users')
-    .select('points')
-    .eq('id', userId)
-    .single();
-
-  if (userError || !user) {
-    alert('Nie udało się pobrać danych użytkownika.');
-    return;
-  }
-
-  // Sprawdź, czy użytkownik ma wystarczającą liczbę punktów
-  if (user.points < pointsRequired) {
-    alert('Masz za mało punktów, aby kupić ten film.');
-    return;
-  }
-
-  // Odejmij punkty
-  const { error: updateError } = await supabase
-    .from('users')
-    .update({ points: user.points - pointsRequired })
-    .eq('id', userId);
-
-  if (updateError) {
-    alert('Nie udało się zaktualizować punktów.');
-    return;
-  }
-
-  // Dodaj wpis do tabeli unlocks
-  const { error: insertError } = await supabase
-    .from('unlocks')
-    .insert([{ user_id: userId, movie_id: movieId }]);
-
-  if (insertError) {
-    alert('Nie udało się odblokować filmu.');
-    return;
-  }
-
-  // Odśwież przycisk, by zmienił się na „Oglądaj”
-  renderMovieButton(movieId, pointsRequired, megaUrl);
-}
-
 // Points & unlocks
 async function addPoints(userId, change, reason){
   // 1) log
